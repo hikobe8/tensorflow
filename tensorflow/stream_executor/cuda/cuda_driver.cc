@@ -431,7 +431,8 @@ bool DeviceOptionsToContextFlags(const DeviceOptions &device_options,
     *context = CreatedContexts::Add(new_context);
     CHECK(*context != nullptr)
         << "success in this call must entail non-null result";
-    VLOG(2) << "created or reused context " << context << " for this thread";
+    VLOG(2) << "created or reused context " << new_context
+            << " for this thread";
     return port::Status::OK();
   }
 
@@ -769,13 +770,13 @@ CUDADriver::ContextGetSharedMemConfig(CudaContext* context) {
   ScopedActivateContext activated{context};
   CUresult res = cuStreamCreate(out, 0);
   if (res != CUDA_SUCCESS) {
-    LOG(ERROR) << "could not allocate CUDA stream for context " << context
-               << ": " << ToString(res);
+    LOG(ERROR) << "could not allocate CUDA stream for context "
+               << context->context() << ": " << ToString(res);
     return false;
   }
 
   VLOG(2) << "successfully created stream " << *out << " for context "
-          << context << " on thread";
+          << context->context() << " on thread";
   return true;
 }
 
@@ -788,11 +789,11 @@ CUDADriver::ContextGetSharedMemConfig(CudaContext* context) {
   ScopedActivateContext activated{context};
   CUresult res = cuStreamDestroy(*stream);
   if (res != CUDA_SUCCESS) {
-    LOG(ERROR) << "failed to destroy CUDA stream for context " << context
-               << ": " << ToString(res);
+    LOG(ERROR) << "failed to destroy CUDA stream for context "
+               << context->context() << ": " << ToString(res);
   } else {
     VLOG(2) << "successfully destroyed stream " << *stream << " for context "
-            << context;
+            << context->context();
     *stream = nullptr;
   }
 }
@@ -809,8 +810,8 @@ CUDADriver::ContextGetSharedMemConfig(CudaContext* context) {
     return nullptr;
   }
   void *ptr = reinterpret_cast<void *>(result);
-  VLOG(2) << "allocated " << ptr << " for context " << context << " of "
-          << bytes << " bytes";
+  VLOG(2) << "allocated " << ptr << " for context " << context->context()
+          << " of " << bytes << " bytes";
   return ptr;
 }
 
@@ -823,7 +824,8 @@ CUDADriver::ContextGetSharedMemConfig(CudaContext* context) {
     LOG(ERROR) << "failed to free device memory at " << location
                << "; result: " << ToString(res);
   } else {
-    VLOG(2) << "deallocated " << location << " for context " << context;
+    VLOG(2) << "deallocated " << location << " for context "
+            << context->context();
   }
 }
 
@@ -839,8 +841,8 @@ CUDADriver::ContextGetSharedMemConfig(CudaContext* context) {
     return nullptr;
   }
   void *ptr = reinterpret_cast<void *>(result);
-  VLOG(2) << "allocated " << ptr << " for context " << context << " of "
-          << bytes << " bytes in unified memory";
+  VLOG(2) << "allocated " << ptr << " for context " << context->context()
+          << " of " << bytes << " bytes in unified memory";
   return ptr;
 }
 
@@ -854,7 +856,7 @@ CUDADriver::ContextGetSharedMemConfig(CudaContext* context) {
                << "; result: " << ToString(res);
   } else {
     VLOG(2) << "deallocated unified memory at " << location << " for context "
-            << context;
+            << context->context();
   }
 }
 
@@ -1288,15 +1290,28 @@ CUDADriver::ContextGetSharedMemConfig(CudaContext* context) {
                                                            CUdevice device) {
   *cc_major = 0;
   *cc_minor = 0;
-  CUresult result = cuDeviceComputeCapability(cc_major, cc_minor, device);
-  if (result == CUDA_SUCCESS) {
-    return port::Status::OK();
+
+  CUresult res = cuDeviceGetAttribute(
+      cc_major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device);
+  if (res != CUDA_SUCCESS) {
+    return port::Status(
+        port::error::INTERNAL,
+        port::Printf(
+            "failed to get compute capability major for device: %s; %d",
+            ToString(res).c_str(), device));
   }
 
-  return port::Status(
-      port::error::INTERNAL,
-      port::Printf("failed to get compute capability for device: %s; %d",
-                   ToString(result).c_str(), device));
+  res = cuDeviceGetAttribute(
+      cc_minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device);
+  if (res != CUDA_SUCCESS) {
+    return port::Status(
+        port::error::INTERNAL,
+        port::Printf(
+            "failed to get compute capability minor for device: %s; %d",
+            ToString(res).c_str(), device));
+  }
+
+  return port::Status::OK();
 }
 
 // Helper function that turns the integer output of cuDeviceGetAttribute to type
@@ -1390,17 +1405,6 @@ static port::StatusOr<T> GetSimpleAttribute(CUdevice device,
   CUresult res = cuDriverGetVersion(driver_version);
   if (res != CUDA_SUCCESS) {
     LOG(ERROR) << "failed to query driver version: " << ToString(res);
-    return false;
-  }
-
-  return true;
-}
-
-/* static */ bool CUDADriver::GetDeviceProperties(CUdevprop *device_properties,
-                                                  int device_ordinal) {
-  CUresult res = cuDeviceGetProperties(device_properties, device_ordinal);
-  if (res != CUDA_SUCCESS) {
-    LOG(ERROR) << "failed to query device properties: " << ToString(res);
     return false;
   }
 
